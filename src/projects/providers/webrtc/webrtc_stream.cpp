@@ -18,12 +18,12 @@ namespace pvd
 {
 	std::shared_ptr<WebRTCStream> WebRTCStream::Create(StreamSourceType source_type, ov::String stream_name,
 													   const std::shared_ptr<PushProvider> &provider,
-													   const std::shared_ptr<const SessionDescription> &offer_sdp,
+													   const std::shared_ptr<const SessionDescription> &local_sdp,
 													   const std::shared_ptr<const SessionDescription> &peer_sdp,
 													   const std::shared_ptr<Certificate> &certificate,
 													   const std::shared_ptr<IcePort> &ice_port)
 	{
-		auto stream = std::make_shared<WebRTCStream>(source_type, stream_name, provider, offer_sdp, peer_sdp, certificate, ice_port);
+		auto stream = std::make_shared<WebRTCStream>(source_type, stream_name, provider, local_sdp, peer_sdp, certificate, ice_port);
 		if (stream != nullptr)
 		{
 			if (stream->Start() == false)
@@ -36,16 +36,17 @@ namespace pvd
 
 	WebRTCStream::WebRTCStream(StreamSourceType source_type, ov::String stream_name,
 							   const std::shared_ptr<PushProvider> &provider,
-							   const std::shared_ptr<const SessionDescription> &offer_sdp,
+							   const std::shared_ptr<const SessionDescription> &local_sdp,
 							   const std::shared_ptr<const SessionDescription> &peer_sdp,
 							   const std::shared_ptr<Certificate> &certificate,
 							   const std::shared_ptr<IcePort> &ice_port)
 		: PushStream(source_type, stream_name, provider), Node(NodeType::Edge)
 	{
-		_offer_sdp = offer_sdp;
+		_local_sdp = local_sdp;
 		_peer_sdp = peer_sdp;
 		_ice_port = ice_port;
 		_certificate = certificate;
+		_session_key = ov::Random::GenerateString(8);
 	}
 
 	WebRTCStream::~WebRTCStream()
@@ -56,17 +57,17 @@ namespace pvd
 	{
 		std::lock_guard<std::shared_mutex> lock(_start_stop_lock);
 
-		logtd("[WebRTC Provider] OfferSDP");
-		logtd("%s\n", _offer_sdp->ToString().CStr());
-		logtd("[WebRTC Provider] AnswerSDP");
+		logtd("[WebRTC Provider] Local SDP");
+		logtd("%s\n", _local_sdp->ToString().CStr());
+		logtd("[WebRTC Provider] Peer SDP");
 		logtd("%s", _peer_sdp->ToString().CStr());
 
-		auto offer_media_desc_list = _offer_sdp->GetMediaList();
+		auto local_media_desc_list = _local_sdp->GetMediaList();
 		auto peer_media_desc_list = _peer_sdp->GetMediaList();
 
-		if (offer_media_desc_list.size() != peer_media_desc_list.size())
+		if (local_media_desc_list.size() != peer_media_desc_list.size())
 		{
-			logte("m= line of answer does not correspond with offer");
+			logte("m= line of peer does not correspond with local");
 			return false;
 		}
 
@@ -80,12 +81,12 @@ namespace pvd
 		_dtls_transport->StartDTLS();
 
 		// RFC3264
-		// For each "m=" line in the offer, there MUST be a corresponding "m=" line in the answer.
+		// For each "m=" line in the local, there MUST be a corresponding "m=" line in the peer.
 		std::vector<uint32_t> ssrc_list;
 		for (size_t i = 0; i < peer_media_desc_list.size(); i++)
 		{
 			auto peer_media_desc = peer_media_desc_list[i];
-			auto offer_media_desc = offer_media_desc_list[i];
+			auto local_media_desc = local_media_desc_list[i];
 
 			if(peer_media_desc->GetDirection() != MediaDescription::Direction::SendOnly &&
 				peer_media_desc->GetDirection() != MediaDescription::Direction::SendRecv)
@@ -251,6 +252,11 @@ namespace pvd
 		return pvd::Stream::Start();
 	}
 
+	ov::String WebRTCStream::GetSessionKey() const
+	{
+		return _session_key;
+	}
+
 	bool WebRTCStream::AddDepacketizer(uint8_t payload_type, RtpDepacketizingManager::SupportedDepacketizerType codec_id)
 	{
 		// Depacketizer
@@ -301,9 +307,9 @@ namespace pvd
 		return pvd::Stream::Stop();
 	}
 
-	std::shared_ptr<const SessionDescription> WebRTCStream::GetOfferSDP()
+	std::shared_ptr<const SessionDescription> WebRTCStream::GetLocalSDP()
 	{
-		return _offer_sdp;
+		return _local_sdp;
 	}
 
 	std::shared_ptr<const SessionDescription> WebRTCStream::GetPeerSDP()
